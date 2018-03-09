@@ -1,5 +1,4 @@
 pub enum AddressingMode {
-  Accumulator,
   Immediate,
   ZeroPage,
   ZeroPageX,
@@ -7,11 +6,13 @@ pub enum AddressingMode {
   Absolute,
   AbsoluteX,
   AbsoluteY,
-  Implied,
-  Relative,
   IndexedIndirect,
-  IndirectIndexed,
-  Indirect
+  IndirectIndexed
+}
+
+pub enum JumpAddressingMode {
+    Absolute,
+    Indirect
 }
 
 pub enum SingleByteMnemonic {
@@ -63,7 +64,7 @@ pub enum Instruction {
     Push(PushMnemonic),
     Pull(PullMnemonic),
     Branch(BranchMnemonic),
-    Jump(AddressingMode),
+    Jump(JumpAddressingMode),
     Misc(MiscMnemonic)
 }
 
@@ -85,7 +86,7 @@ pub fn decode(opcode: u8) -> Option<Instruction> {
         0x39 => Some(Instruction::Read(ReadMnemonic::AND, AddressingMode::AbsoluteY)),
         0x21 => Some(Instruction::Read(ReadMnemonic::AND, AddressingMode::IndexedIndirect)),
         0x31 => Some(Instruction::Read(ReadMnemonic::AND, AddressingMode::IndirectIndexed)),
-        0x0a => Some(Instruction::ReadModifyWrite(RMWMnemonic::ASL, AddressingMode::Accumulator)),
+        0x0a => Some(Instruction::SingleByte(SingleByteMnemonic::ASL)),
         0x06 => Some(Instruction::ReadModifyWrite(RMWMnemonic::ASL, AddressingMode::ZeroPage)),
         0x16 => Some(Instruction::ReadModifyWrite(RMWMnemonic::ASL, AddressingMode::ZeroPageX)),
         0x0e => Some(Instruction::ReadModifyWrite(RMWMnemonic::ASL, AddressingMode::Absolute)),
@@ -139,8 +140,8 @@ pub fn decode(opcode: u8) -> Option<Instruction> {
         0xfe => Some(Instruction::ReadModifyWrite(RMWMnemonic::INC, AddressingMode::AbsoluteX)),
         0xe8 => Some(Instruction::SingleByte(SingleByteMnemonic::INX)),
         0xc8 => Some(Instruction::SingleByte(SingleByteMnemonic::INY)),
-        0x4c => Some(Instruction::Jump(AddressingMode::Absolute)),
-        0x6c => Some(Instruction::Jump(AddressingMode::Indirect)),
+        0x4c => Some(Instruction::Jump(JumpAddressingMode::Absolute)),
+        0x6c => Some(Instruction::Jump(JumpAddressingMode::Indirect)),
         0x20 => Some(Instruction::Misc(MiscMnemonic::JSR)),
         0xa1 => Some(Instruction::Read(ReadMnemonic::LDA, AddressingMode::IndexedIndirect)),
         0xa5 => Some(Instruction::Read(ReadMnemonic::LDA, AddressingMode::ZeroPage)),
@@ -160,7 +161,7 @@ pub fn decode(opcode: u8) -> Option<Instruction> {
         0xb4 => Some(Instruction::Read(ReadMnemonic::LDY, AddressingMode::ZeroPageX)),
         0xac => Some(Instruction::Read(ReadMnemonic::LDY, AddressingMode::Absolute)),
         0xbc => Some(Instruction::Read(ReadMnemonic::LDY, AddressingMode::AbsoluteX)),
-        0x4a => Some(Instruction::ReadModifyWrite(RMWMnemonic::LSR, AddressingMode::Accumulator)),
+        0x4a => Some(Instruction::SingleByte(SingleByteMnemonic::LSR)),
         0x46 => Some(Instruction::ReadModifyWrite(RMWMnemonic::LSR, AddressingMode::ZeroPage)),
         0x56 => Some(Instruction::ReadModifyWrite(RMWMnemonic::LSR, AddressingMode::ZeroPageX)),
         0x4e => Some(Instruction::ReadModifyWrite(RMWMnemonic::LSR, AddressingMode::Absolute)),
@@ -178,7 +179,7 @@ pub fn decode(opcode: u8) -> Option<Instruction> {
         0x08 => Some(Instruction::Push(PushMnemonic::PHP)),
         0x68 => Some(Instruction::Pull(PullMnemonic::PLA)),
         0x28 => Some(Instruction::Pull(PullMnemonic::PLP)),
-        0x2a => Some(Instruction::ReadModifyWrite(RMWMnemonic::ROL, AddressingMode::Accumulator)),
+        0x2a => Some(Instruction::SingleByte(SingleByteMnemonic::ROL)),
         0x26 => Some(Instruction::ReadModifyWrite(RMWMnemonic::ROL, AddressingMode::ZeroPage)),
         0x36 => Some(Instruction::ReadModifyWrite(RMWMnemonic::ROL, AddressingMode::ZeroPageX)),
         0x2e => Some(Instruction::ReadModifyWrite(RMWMnemonic::ROL, AddressingMode::Absolute)),

@@ -2,6 +2,10 @@ pub mod instruction;
 use self::instruction::*;
 use std::ops::DerefMut;
 
+fn combine_low_high(low: u8, high: u8) -> usize {
+    (low as usize) | ((high as usize) << 8)
+}
+
 #[derive(Default)]
 pub struct StatusRegister {
     carry: bool,
@@ -78,7 +82,8 @@ pub struct Registers {
 pub struct Cpu {
     memory: Vec<u8>,
     cycles: u64,
-    registers: Registers
+    registers: Registers,
+    executing_read: bool
 }
 
 impl Default for Cpu {
@@ -86,7 +91,8 @@ impl Default for Cpu {
         Cpu {
             memory: vec![0; 65536],
             cycles: 0,
-            registers: Default::default()
+            registers: Default::default(),
+            executing_read: false
         }
     }
 }
@@ -94,10 +100,9 @@ impl Default for Cpu {
 
 impl Cpu {
     pub fn new(r: Registers) -> Self {
-        Cpu {
-            memory: vec![0; 65536],
-            cycles: 0,
-            registers: r
+        Cpu { 
+            registers: r,
+            .. Default::default()
         }
     }
 
@@ -122,6 +127,10 @@ impl Cpu {
 
     fn get_x(&self) -> u8 {
         self.registers.x
+    }
+
+    fn get_y(&self) -> u8 {
+        self.registers.y
     }
 
 
@@ -195,6 +204,104 @@ impl Cpu {
         self.set_a(res);
     }
 
+    fn resolve_immmediate(&mut self) -> usize {
+        let pc = self.registers.pc;
+        self.registers.pc += 1;
+        pc
+    }
+
+    fn resolve_zero_page(&mut self) -> usize {
+        let val = self.read_pc();
+        val as usize
+    }
+
+    fn resolve_zero_page_x(&mut self) -> usize {
+        let val = self.read_pc();
+        let _ = self.read_byte(val as usize);
+        let x = self.get_x();
+        val.wrapping_add(x) as usize
+    }
+
+    fn resolve_zero_page_y(&mut self) -> usize {
+        let val = self.read_pc();
+        let _ = self.read_byte(val as usize);
+        let y = self.get_y();
+        val.wrapping_add(y) as usize
+    }
+
+    fn resolve_absolute(&mut self) -> usize {
+        let adl = self.read_pc();
+        let adh = self.read_pc();
+        combine_low_high(adl, adh)
+    }
+
+    fn resolve_low_high(&mut self, adl: u8, adh: u8, val: u8) -> usize {
+        let addr = combine_low_high(adl.wrapping_add(val), adh);
+        if adl <= 255 - val {
+            if !self.executing_read {
+                let _ = self.read_byte(addr);
+            }
+            addr
+        }
+        else {
+            let _ = self.read_byte(addr);
+            addr + 0x100
+        }
+    }
+
+    fn resolve_absolute_add(&mut self, val: u8) -> usize {
+        let adl = self.read_pc();
+        let adh = self.read_pc();
+        self.resolve_low_high(adl, adh, val)
+    }
+
+    fn resolve_absolute_x(&mut self) -> usize {
+        let x = self.get_x();
+        self.resolve_absolute_add(x)
+    }
+
+    fn resolve_absolute_y(&mut self) -> usize {
+        let y = self.get_y();
+        self.resolve_absolute_add(y)
+    }
+
+    fn resolve_indexed_indirect(&mut self) -> usize {
+        let bal = self.read_pc();
+        let _ = self.read_byte(bal as usize);
+        let effective_bal = bal.wrapping_add(self.get_x());
+        let adl = self.read_byte(effective_bal as usize);
+        let adh = self.read_byte(effective_bal.wrapping_add(1) as usize);
+        combine_low_high(adl, adh)
+    }
+
+
+    fn resolve_indirect_indexed(&mut self) -> usize {
+        let ial = self.read_pc();
+        let bal = self.read_byte(ial as usize);
+        let bah = self.read_byte(ial.wrapping_add(1) as usize);
+        let y = self.get_y();
+        self.resolve_low_high(bal, bah, y)
+    }
+
+    fn resolve_address(&mut self, am: AddressingMode) -> usize {
+        match am {
+            AddressingMode::Immediate => self.resolve_immmediate(),
+            AddressingMode::ZeroPage => self.resolve_zero_page(),
+            AddressingMode::ZeroPageX => self.resolve_zero_page_x(),
+            AddressingMode::ZeroPageY => self.resolve_zero_page_y(),
+            AddressingMode::Absolute => self.resolve_absolute(),
+            AddressingMode::AbsoluteX => self.resolve_absolute_x(),
+            AddressingMode::AbsoluteY => self.resolve_absolute_y(),
+            AddressingMode::IndexedIndirect => self.resolve_indexed_indirect(),
+            AddressingMode::IndirectIndexed => self.resolve_indirect_indexed()
+        }
+    }
+
+    fn fetch_operand(&mut self, am: AddressingMode) -> u8 {
+        let addr = self.resolve_address(am);
+        self.read_byte(addr)
+    }
+
 
     fn execute_single_byte(&mut self, m: SingleByteMnemonic) {
         match m {
@@ -228,10 +335,20 @@ impl Cpu {
         self.bogus_read_pc();
     }
 
+    fn execute_read(&mut self, m: ReadMnemonic, am: AddressingMode) {
+        self.executing_read = true;
+        let oper = self.fetch_operand(am);
+        match m {
+            _ => println!("Executing {:?}!", oper)
+        }
+        self.executing_read = false;
+    }
+
     fn dispatch(&mut self, opcode: u8) -> Result<(), Error> {
         let instruction = decode(opcode).ok_or(Error::IllegalOpcode(opcode))?;
         match instruction {
             Instruction::SingleByte(mnemonic) => self.execute_single_byte(mnemonic),
+            Instruction::Read(mnemonic, am) => self.execute_read(mnemonic, am),
             _ => return Err(Error::IllegalOpcode(065))
         }
         Ok(())
@@ -245,9 +362,16 @@ impl Cpu {
     }
 
     fn read_pc(&mut self) -> u8 {
-        assert!(self.registers.pc <= 65535, "program counter too high");
-        let v = self.memory[self.registers.pc];
+        let pc = self.registers.pc;
+        let v = self.read_byte(pc);
         self.registers.pc += 1;
+        v
+    }
+
+    fn read_byte(&mut self, address: usize) -> u8 {
+        assert!(address <= 65535, "address out of bounds");
+        let v = self.memory[address];
+        self.full_cycle();
         v
     }
 
@@ -268,7 +392,7 @@ mod test {
             let m = c.get_memory();
             m[0] = 0xe8;
         }
-        c.step();
+        c.step().unwrap();
         assert_eq!(c.get_x(), 1)
     }
 
@@ -279,7 +403,7 @@ mod test {
             let m = c.get_memory();
             m[0] = 0xe8;
         }
-        c.step();
+        c.step().unwrap();
         assert_eq!(c.get_x(), 0)
     }
 
@@ -288,7 +412,7 @@ mod test {
         let mut c = Cpu::new(Registers { x:1, .. Default::default()});
         let vals = [0xca];
         c.fill_memory(0, &vals);
-        c.step();
+        c.step().unwrap();
         assert_eq!(c.get_x(), 0x00);
     }
 
@@ -299,7 +423,7 @@ mod test {
             let m = c.get_memory();
             m[0] = 0xca;
         }
-        c.step();
+        c.step().unwrap();
         assert_eq!(c.get_x(), 0xff)
     }
 }
