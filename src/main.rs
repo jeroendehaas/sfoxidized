@@ -1,4 +1,4 @@
-mod cpu;
+mod sfoxidized;
 
 fn main() {
     println!("Hello, world!");

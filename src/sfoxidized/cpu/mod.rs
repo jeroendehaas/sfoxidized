@@ -1,9 +1,43 @@
 pub mod instruction;
+mod test;
 use self::instruction::*;
 use std::ops::DerefMut;
 
-fn combine_low_high(low: u8, high: u8) -> usize {
-    (low as usize) | ((high as usize) << 8)
+fn same_sign(lhs: u8, rhs: u8) -> bool {
+    lhs & 0x80 == rhs & 0x80
+}
+
+trait Address where Self: Sized {
+    fn low_byte(self) -> u8;
+    fn high_byte(self) -> u8;
+    fn combine_low_high(low: u8, high: u8) -> Self;
+    fn add_offset(self, offset: u8) -> Self;
+    fn on_different_page(self, rhs: Self) -> bool {
+        self.high_byte() != rhs.high_byte()
+    }
+}
+
+impl Address for usize {
+    fn low_byte(self) -> u8 {
+        (self & 0xff) as u8
+    }
+
+    fn high_byte(self) -> u8 {
+        ((self & 0xff00) >> 8) as u8
+    }
+
+    fn combine_low_high(low: u8, high: u8) -> Self {
+        low as Self | ((high as Self) << 8)
+    }
+
+    fn add_offset(self, offset: u8) -> usize {
+        if offset < 128 {
+            self + offset as usize
+        }
+        else {
+            self - (255 - offset) as usize
+        }
+    }
 }
 
 #[derive(Default)]
@@ -196,8 +230,8 @@ impl Cpu {
         self.set_y(res);
     }
 
-    fn mod_a<F>(&mut self, f: F)
-        where F: Fn(&mut Self, u8) -> u8
+    fn mod_a<F>(&mut self, mut f: F)
+        where F: FnMut(&mut Self, u8) -> u8
     {
         let a = self.registers.a;
         let res = f(self, a);
@@ -232,11 +266,11 @@ impl Cpu {
     fn resolve_absolute(&mut self) -> usize {
         let adl = self.read_pc();
         let adh = self.read_pc();
-        combine_low_high(adl, adh)
+        Address::combine_low_high(adl, adh)
     }
 
     fn resolve_low_high(&mut self, adl: u8, adh: u8, val: u8) -> usize {
-        let addr = combine_low_high(adl.wrapping_add(val), adh);
+        let addr = Address::combine_low_high(adl.wrapping_add(val), adh);
         if adl <= 255 - val {
             if !self.executing_read {
                 let _ = self.read_byte(addr);
@@ -271,7 +305,7 @@ impl Cpu {
         let effective_bal = bal.wrapping_add(self.get_x());
         let adl = self.read_byte(effective_bal as usize);
         let adh = self.read_byte(effective_bal.wrapping_add(1) as usize);
-        combine_low_high(adl, adh)
+        Address::combine_low_high(adl, adh)
     }
 
 
@@ -300,6 +334,59 @@ impl Cpu {
     fn fetch_operand(&mut self, am: AddressingMode) -> u8 {
         let addr = self.resolve_address(am);
         self.read_byte(addr)
+    }
+
+    fn compare(&mut self, register: u8, operand: u8) {
+        self.registers.p.carry = register >= operand;
+        self.registers.p.zero = register == operand;
+        self.registers.p.negative = ((register.wrapping_sub(operand)) & 0x80) != 0;
+    }
+
+    fn compare_a(&mut self, operand: u8) {
+        let a = self.registers.a;
+        self.compare(a, operand);
+    }
+
+    fn compare_x(&mut self, operand: u8) {
+        let x = self.registers.x;
+        self.compare(x, operand);
+    }
+
+    fn compare_y(&mut self, operand: u8) {
+        let y = self.registers.y;
+        self.compare(y, operand);
+    }
+
+    fn bit(&mut self, operand: u8) {
+        let a = self.registers.a;
+        self.registers.p.overflow = operand & 0x40 != 0;
+        self.registers.p.negative = operand & 0x80 != 0;
+        self.registers.p.zero = a == operand;
+    }
+
+    fn sbc(&mut self, operand: u8) {
+        // [TODO]: Add support for decimal mode
+        let a = self.registers.a;
+        let c = if self.registers.p.carry {
+            0
+        } else {
+            1
+        };
+        let effective_operand = operand.wrapping_sub(c);
+        let res = a.wrapping_sub(effective_operand);
+        self.registers.p.carry = a < effective_operand;
+        self.registers.p.overflow = same_sign(a, operand) && !same_sign(a, res);
+        self.set_a(res)
+    }
+
+    fn adc(&mut self, operand: u8) {
+        // [TODO]: Add support for decimal mode
+        let a = self.registers.a;
+        let effective_operand = operand.wrapping_add(self.registers.p.carry_into_u8());
+        let res = a.wrapping_add(effective_operand);
+        self.registers.p.carry = a > 255 - effective_operand;
+        self.registers.p.overflow = same_sign(a, operand) && !same_sign(a, res);
+        self.set_a(res);
     }
 
 
@@ -337,11 +424,49 @@ impl Cpu {
 
     fn execute_read(&mut self, m: ReadMnemonic, am: AddressingMode) {
         self.executing_read = true;
-        let oper = self.fetch_operand(am);
+        let operand = self.fetch_operand(am);
         match m {
-            _ => println!("Executing {:?}!", oper)
+            ReadMnemonic::ADC => self.adc(operand),
+            ReadMnemonic::AND => self.mod_a(|_, a| a & operand),
+            ReadMnemonic::BIT => self.bit(operand),
+            ReadMnemonic::CMP => self.compare_a(operand),
+            ReadMnemonic::CPX => self.compare_x(operand),
+            ReadMnemonic::CPY => self.compare_y(operand),
+            ReadMnemonic::EOR => self.mod_a(|_, a| a ^ operand),
+            ReadMnemonic::LDA => self.mod_a(|_, _| operand),
+            ReadMnemonic::LDX => self.mod_x(|_, _| operand),
+            ReadMnemonic::LDY => self.mod_y(|_, _| operand),
+            ReadMnemonic::ORA => self.mod_a(|_, a| a | operand),
+            ReadMnemonic::SBC => self.sbc(operand)
         }
         self.executing_read = false;
+    }
+
+    fn should_branch(&self, m: BranchMnemonic) -> bool {
+        match m {
+            BranchMnemonic::BCC => !self.registers.p.carry,
+            BranchMnemonic::BCS => self.registers.p.carry,
+            BranchMnemonic::BEQ => self.registers.p.zero,
+            BranchMnemonic::BMI => self.registers.p.negative,
+            BranchMnemonic::BNE => !self.registers.p.zero,
+            BranchMnemonic::BPL => !self.registers.p.negative,
+            BranchMnemonic::BVC => self.registers.p.overflow,
+            BranchMnemonic::BVS => !self.registers.p.overflow
+        }
+    }
+
+    fn execute_branch(&mut self, m: BranchMnemonic) {
+        let offset = self.read_pc();
+        if !self.should_branch(m) {
+            return;
+        }
+        let pc = self.registers.pc;
+        let next_pc = pc.add_offset(offset);
+        if next_pc.on_different_page(pc) {
+            let _ = self.read_byte(Address::combine_low_high(next_pc.low_byte(), pc.high_byte()));
+        }
+        let _ = self.read_byte(next_pc);
+        self.registers.pc = next_pc;
     }
 
     fn dispatch(&mut self, opcode: u8) -> Result<(), Error> {
@@ -349,6 +474,7 @@ impl Cpu {
         match instruction {
             Instruction::SingleByte(mnemonic) => self.execute_single_byte(mnemonic),
             Instruction::Read(mnemonic, am) => self.execute_read(mnemonic, am),
+            Instruction::Branch(mnemonic) => self.execute_branch(mnemonic),
             _ => return Err(Error::IllegalOpcode(065))
         }
         Ok(())
@@ -381,49 +507,3 @@ impl Cpu {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn inx() {
-        let mut c: Cpu = Default::default();
-        {
-            let m = c.get_memory();
-            m[0] = 0xe8;
-        }
-        c.step().unwrap();
-        assert_eq!(c.get_x(), 1)
-    }
-
-    #[test]
-    fn inx_wraps() {
-        let mut c = Cpu::new(Registers { x:255, .. Default::default()});
-        {
-            let m = c.get_memory();
-            m[0] = 0xe8;
-        }
-        c.step().unwrap();
-        assert_eq!(c.get_x(), 0)
-    }
-
-    #[test]
-    fn dex() {
-        let mut c = Cpu::new(Registers { x:1, .. Default::default()});
-        let vals = [0xca];
-        c.fill_memory(0, &vals);
-        c.step().unwrap();
-        assert_eq!(c.get_x(), 0x00);
-    }
-
-    #[test]
-    fn dex_wraps() {
-        let mut c: Cpu = Default::default();
-        {
-            let m = c.get_memory();
-            m[0] = 0xca;
-        }
-        c.step().unwrap();
-        assert_eq!(c.get_x(), 0xff)
-    }
-}
